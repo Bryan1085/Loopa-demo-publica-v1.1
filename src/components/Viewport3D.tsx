@@ -59,6 +59,7 @@ export interface Viewport3DHandle {
   focusSelected: () => void;
   confirmMoveSlide: () => boolean;
   captureThumbnail: () => string | null;
+  captureScreenshot: () => string | null;
   resetCamera: () => void;
 }
 
@@ -398,6 +399,16 @@ export const Viewport3D = React.forwardRef<Viewport3DHandle, Viewport3DProps>(
         },
         captureThumbnail() {
           return engineRef.current?.captureThumbnailDataUrl(480, 320) ?? null;
+        },
+        captureScreenshot() {
+          const rect = viewportContainerRef.current?.getBoundingClientRect();
+          const aspect =
+            rect && rect.height > 0 ? rect.width / rect.height : 16 / 10;
+          const width = 960;
+          const height = Math.max(360, Math.min(900, Math.round(width / aspect)));
+          return (
+            engineRef.current?.captureThumbnailDataUrl(width, height) ?? null
+          );
         },
         resetCamera() {
           engineRef.current?.resetCameraToDefault();

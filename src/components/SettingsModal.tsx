@@ -45,6 +45,12 @@ import {
 } from '../core/radial/radialActions';
 import { TOUCH_MODIFIER_REGISTRY } from '../engine/TouchGestureManager';
 import {
+  AppCapabilities,
+  DEMO_LOCAL_STORAGE_WARNING,
+  getAppCapabilities,
+  ProFeatureKey,
+} from '../config/appCapabilities';
+import {
   APP_DESCRIPTION,
   APP_NAME,
   APP_TAGLINE,
@@ -60,9 +66,12 @@ import type { SceneStatsInfo } from './TopBar';
 export type SettingsTabId = 'touch' | 'viewer' | 'tools';
 
 interface SettingsModalProps {
+  capabilities?: AppCapabilities;
+  userObjectCount?: number;
   settings: ModelerSettings;
   sceneStats?: SceneStatsInfo;
   initialTab?: SettingsTabId;
+  onOpenProInfo?: (feature?: ProFeatureKey) => void;
   onUpdateSettings: (patch: Partial<ModelerSettings>) => void;
   onUpdateTouchSettings: (patch: Partial<TouchControlSettings>) => void;
   onUpdateTouchModifier: (
@@ -164,9 +173,12 @@ const TOOL_CATALOG: {
 ];
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
+  capabilities = getAppCapabilities(),
+  userObjectCount,
   settings,
   sceneStats,
   initialTab = 'touch',
+  onOpenProInfo,
   onUpdateSettings,
   onUpdateTouchSettings,
   onUpdateTouchModifier,
@@ -1351,72 +1363,97 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
               <div className="h-px bg-[#2b2e36]" />
 
-              <div className="rounded-lg bg-[#15171c] border border-[#2b2e36] p-3 space-y-3">
-                <div className="text-xs font-semibold text-[#eceef2]">
-                  Guardado automático y recuperación
-                </div>
-
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium text-[#eceef2]">
-                      Guardado automático
-                    </div>
-                    <div className="text-[11px] text-[#8e95a2]">
-                      Guarda cambios y actualiza la miniatura automáticamente
-                    </div>
+              {capabilities.autosaveAllowed ? (
+                <div className="rounded-lg bg-[#15171c] border border-[#2b2e36] p-3 space-y-3">
+                  <div className="text-xs font-semibold text-[#eceef2]">
+                    Guardado automático y recuperación
                   </div>
-                  {renderSwitch(
-                    settings.autosaveEnabled,
-                    () =>
-                      onUpdateSettings({
-                        autosaveEnabled: !settings.autosaveEnabled,
-                      }),
-                    'Activar guardado automático',
-                  )}
-                </div>
 
-                {settings.autosaveEnabled && (
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-xs text-[#cbd5e1]">
-                      Intervalo de autoguardado
-                    </span>
-                    <select
-                      value={settings.autosaveIntervalSec}
-                      onChange={(e) =>
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-[#eceef2]">
+                        Guardado automático
+                      </div>
+                      <div className="text-[11px] text-[#8e95a2]">
+                        Guarda cambios y actualiza la miniatura automáticamente
+                      </div>
+                    </div>
+                    {renderSwitch(
+                      settings.autosaveEnabled,
+                      () =>
                         onUpdateSettings({
-                          autosaveIntervalSec: Number(e.target.value),
-                        })
-                      }
-                      className="h-9 px-2.5 rounded-md bg-[#111317] border border-[#2f333d] text-xs font-mono-tabular text-[#f3f4f6] outline-none"
-                    >
-                      <option value={15}>Cada 15 s</option>
-                      <option value={30}>Cada 30 s</option>
-                      <option value={60}>Cada 1 min</option>
-                      <option value={120}>Cada 2 min</option>
-                      <option value={300}>Cada 5 min</option>
-                    </select>
+                          autosaveEnabled: !settings.autosaveEnabled,
+                        }),
+                      'Activar guardado automático',
+                    )}
                   </div>
-                )}
 
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs font-medium text-[#eceef2]">
-                      Copia de seguridad previa
+                  {settings.autosaveEnabled && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-xs text-[#cbd5e1]">
+                        Intervalo de autoguardado
+                      </span>
+                      <select
+                        value={settings.autosaveIntervalSec}
+                        onChange={(e) =>
+                          onUpdateSettings({
+                            autosaveIntervalSec: Number(e.target.value),
+                          })
+                        }
+                        className="h-9 px-2.5 rounded-md bg-[#111317] border border-[#2f333d] text-xs font-mono-tabular text-[#f3f4f6] outline-none"
+                      >
+                        <option value={15}>Cada 15 s</option>
+                        <option value={30}>Cada 30 s</option>
+                        <option value={60}>Cada 1 min</option>
+                        <option value={120}>Cada 2 min</option>
+                        <option value={300}>Cada 5 min</option>
+                      </select>
                     </div>
-                    <div className="text-[11px] text-[#8e95a2]">
-                      Conserva un respaldo antes de cada sobrescritura manual
-                    </div>
-                  </div>
-                  {renderSwitch(
-                    settings.createRecoveryBackups,
-                    () =>
-                      onUpdateSettings({
-                        createRecoveryBackups: !settings.createRecoveryBackups,
-                      }),
-                    'Copia de seguridad previa',
                   )}
+
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-[#eceef2]">
+                        Copia de seguridad previa
+                      </div>
+                      <div className="text-[11px] text-[#8e95a2]">
+                        Conserva un respaldo antes de cada sobrescritura manual
+                      </div>
+                    </div>
+                    {renderSwitch(
+                      settings.createRecoveryBackups,
+                      () =>
+                        onUpdateSettings({
+                          createRecoveryBackups: !settings.createRecoveryBackups,
+                        }),
+                      'Copia de seguridad previa',
+                    )}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="rounded-lg bg-[#15171c] border border-[#2b2e36] p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-[#eceef2]">
+                      Guardado manual en {capabilities.editionLabel}
+                    </span>
+                    {onOpenProInfo && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenProInfo('autosave')}
+                        className="text-[11px] font-medium text-[#60a5fa] hover:underline"
+                      >
+                        Ver LOOPA Pro
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-[#9ca3af] leading-relaxed">
+                    En la versión Demo el guardado automático está desactivado para que tengas control explícito de tu único espacio de trabajo local. Pulsa <strong>Guardar</strong> en la barra superior o usa <span className="font-mono-tabular">Ctrl+S</span>.
+                  </p>
+                  <p className="text-[11px] text-[#8e95a2] leading-relaxed">
+                    {DEMO_LOCAL_STORAGE_WARNING}
+                  </p>
+                </div>
+              )}
 
               {sceneStats && (
                 <div className="rounded-lg bg-[#15171c] border border-[#2b2e36] p-3 space-y-2">
@@ -1425,8 +1462,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       Información de escena
                     </span>
                     <span className="font-mono-tabular text-[#9ca3af]">
-                      {sceneStats.objectCount} objeto
-                      {sceneStats.objectCount === 1 ? '' : 's'}
+                      {capabilities.maxSceneObjects !== null
+                        ? `${userObjectCount ?? sceneStats.objectCount} / ${capabilities.maxSceneObjects} objetos`
+                        : `${sceneStats.objectCount} objeto${sceneStats.objectCount === 1 ? '' : 's'}`}
                     </span>
                   </div>
                   <div className="text-[11px] text-[#b4bac4] flex items-center justify-between gap-2">
@@ -1856,7 +1894,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <LoopaFullLogo variant="horizontal" className="h-7 w-auto" />
                 <div className="min-w-0">
                   <div className="text-xs font-semibold text-[#e4e6eb] truncate">
-                    {APP_NAME} · {APP_TAGLINE}
+                    {capabilities.editionLabel} · {APP_TAGLINE}
                   </div>
                   <div className="text-[11px] text-[#8e95a2] line-clamp-2">
                     {APP_DESCRIPTION}

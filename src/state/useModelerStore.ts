@@ -25,12 +25,14 @@ import {
   RadialWorkMode,
 } from '../core/radial/radialActions';
 import {
+  clearDemoWorkspaceAsync,
   clearRecoveryDraftAsync,
   createDefaultToolConfigs,
   createNewProject,
   createDefaultTouchSettings,
   createProjectFolderAsync,
   DEFAULT_MODELER_SETTINGS,
+  DemoWorkspaceRecord,
   deleteProjectFolderAsync,
   deleteProjectLocally,
   deleteProjectsAsync,
@@ -41,6 +43,7 @@ import {
   listRecoveryProjectIdsAsync,
   listSavedProjects,
   listSavedProjectsAsync,
+  loadDemoWorkspaceAsync,
   loadInitialProject,
   loadLastGizmoMode,
   loadProjectFromAnyStorage,
@@ -50,12 +53,20 @@ import {
   moveProjectsToFolderAsync,
   renameProjectFolderAsync,
   renameSavedProjectAsync,
+  saveDemoWorkspaceAsync,
   saveLastGizmoMode,
   saveProjectAsync,
   saveProjectLocally,
   saveRecoveryDraftAsync,
   saveSettingsLocally,
 } from '../core/project/storage';
+import {
+  canAddUserModelingObjects,
+  countUserModelingObjects,
+  DEMO_OBJECT_LIMIT_MESSAGE,
+  getAppCapabilities,
+  isProFeatureAllowed,
+} from '../config/appCapabilities';
 import {
   analyzeBridgeEdgeLoops,
   analyzeEdgeLoopRing,
@@ -291,17 +302,27 @@ function cloneMaterials(materials?: MaterialAsset[]): MaterialAsset[] {
 }
 
 export function useModelerStore() {
-  const initialProject = useMemo(() => loadInitialProject(), []);
+  const capabilities = useMemo(() => getAppCapabilities(), []);
+
+  const initialProject = useMemo(
+    () =>
+      capabilities.localSingleWorkspaceOnly
+        ? createNewProject('Espacio Demo', 'cube')
+        : loadInitialProject(),
+    [capabilities.localSingleWorkspaceOnly],
+  );
 
   const [project, setProject] = useState<ProjectData>(initialProject);
   const [savedProjects, setSavedProjects] = useState<ProjectSummary[]>(() =>
-    listSavedProjects(),
+    capabilities.galleryEnabled ? listSavedProjects() : [],
   );
   const [folders, setFolders] = useState<ProjectFolder[]>([]);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('saved');
-  const [lastSavedAt, setLastSavedAt] = useState<number | null>(
-    () => initialProject.updatedAt ?? null,
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(() =>
+    capabilities.localSingleWorkspaceOnly
+      ? null
+      : (initialProject.updatedAt ?? null),
   );
   const [lastSaveError, setLastSaveError] = useState<string | null>(null);
   const [pendingRecovery, setPendingRecovery] =
@@ -310,6 +331,14 @@ export function useModelerStore() {
     ProjectRecoveryRecord[]
   >([]);
   const [isGalleryReady, setIsGalleryReady] = useState(false);
+
+  const [demoWorkspaceRecord, setDemoWorkspaceRecord] =
+    useState<DemoWorkspaceRecord | null>(null);
+  const [demoStartupChecked, setDemoStartupChecked] = useState(
+    !capabilities.localSingleWorkspaceOnly,
+  );
+  const [demoStartupError, setDemoStartupError] = useState<string | null>(null);
+  const [demoSavedSuccessNonce, setDemoSavedSuccessNonce] = useState(0);
 
   const thumbnailProviderRef = useRef<(() => string | null) | null>(null);
   const isModelerActiveRef = useRef(false);
@@ -333,9 +362,17 @@ export function useModelerStore() {
     () => new Set(),
   );
 
-  const [settings, setSettings] = useState<ModelerSettings>(() =>
-    loadSettingsLocally(),
-  );
+  const [settings, setSettings] = useState<ModelerSettings>(() => {
+    const loaded = loadSettingsLocally();
+    if (!capabilities.autosaveAllowed) {
+      return {
+        ...loaded,
+        autosaveEnabled: false,
+        createRecoveryBackups: false,
+      };
+    }
+    return loaded;
+  });
   const [activeTool, setActiveToolState] = useState<TransformTool>(() =>
     loadLastGizmoMode(),
   );
@@ -492,20 +529,30 @@ export function useModelerStore() {
   }, []);
 
   const refreshGalleryData = useCallback(async () => {
+    if (!capabilities.galleryEnabled) return;
     const [nextProjects, nextFolders] = await Promise.all([
       listSavedProjectsAsync(),
       listProjectFoldersAsync(),
     ]);
     setSavedProjects(nextProjects);
     setFolders(nextFolders);
-  }, []);
+  }, [capabilities.galleryEnabled]);
 
-  // Hydrate persistent gallery index, folders, active project, and any crash recovery drafts on startup
+  // Hydrate persistent gallery (Pro) OR inspect Demo single-workspace without silent overwrite
   const initialHydrateRef = useRef(false);
   useEffect(() => {
     if (initialHydrateRef.current) return;
     initialHydrateRef.current = true;
     void (async () => {
+      if (capabilities.localSingleWorkspaceOnly) {
+        const res = await loadDemoWorkspaceAsync();
+        setDemoWorkspaceRecord(res.record);
+        setDemoStartupError(res.ok ? null : (res.error ?? null));
+        setDemoStartupChecked(true);
+        setIsGalleryReady(true);
+        return;
+      }
+
       await refreshGalleryData();
       const recIds = await listRecoveryProjectIdsAsync();
       if (recIds.length > 0) {
@@ -534,10 +581,18 @@ export function useModelerStore() {
       }
       setIsGalleryReady(true);
     })();
-  }, [initialProject.id, refreshGalleryData]);
+  }, [
+    capabilities.localSingleWorkspaceOnly,
+    initialProject.id,
+    refreshGalleryData,
+  ]);
 
   const activeScene = useMemo(() => getActiveScene(project), [project]);
   const activeObjects = activeScene.objects;
+  const userObjectCount = useMemo(
+    () => countUserModelingObjects(activeObjects),
+    [activeObjects],
+  );
 
   const setSingleSelectedObject = useCallback((id: string | null) => {
     setSelectedObjectId(id);
@@ -703,6 +758,10 @@ export function useModelerStore() {
         captureViewport?: boolean;
       },
     ): Promise<boolean> => {
+      // Demo mode strictly forbids silent/automatic saving
+      if (capabilities.manualSaveRequired && options?.silent) {
+        return false;
+      }
       if (isSavingRef.current) return false;
       isSavingRef.current = true;
       setSaveStatus('saving');
@@ -716,6 +775,43 @@ export function useModelerStore() {
           thumbnailProviderRef.current
         ) {
           thumbnail = thumbnailProviderRef.current() ?? undefined;
+        }
+
+        if (capabilities.localSingleWorkspaceOnly) {
+          const res = await saveDemoWorkspaceAsync(targetProject, thumbnail);
+          if (!res.ok || !res.project) {
+            const msg =
+              res.error ??
+              'Error al guardar el proyecto en el almacenamiento del navegador.';
+            setSaveStatus('error');
+            setLastSaveError(msg);
+            showToast(msg);
+            return false;
+          }
+
+          setProject((curr) =>
+            curr.id === res.project!.id
+              ? {
+                  ...curr,
+                  updatedAt: res.project!.updatedAt,
+                  thumbnailDataUrl: res.project!.thumbnailDataUrl,
+                  thumbnailUpdatedAt: res.project!.thumbnailUpdatedAt,
+                }
+              : curr,
+          );
+          setDemoWorkspaceRecord({
+            key: 'active_demo_workspace',
+            savedAt: res.project.updatedAt,
+            project: res.project,
+            thumbnailDataUrl: res.project.thumbnailDataUrl ?? null,
+          });
+          setHasUnsavedChanges(false);
+          setSaveStatus('saved');
+          setLastSavedAt(res.project.updatedAt);
+          setLastSaveError(null);
+          setDemoSavedSuccessNonce((n) => n + 1);
+          showToast('Proyecto guardado localmente en este navegador');
+          return true;
         }
 
         const res = await saveProjectAsync(targetProject, {
@@ -768,7 +864,14 @@ export function useModelerStore() {
         isSavingRef.current = false;
       }
     },
-    [meshRevision, refreshGalleryData, settings.createRecoveryBackups, showToast],
+    [
+      capabilities.localSingleWorkspaceOnly,
+      capabilities.manualSaveRequired,
+      meshRevision,
+      refreshGalleryData,
+      settings.createRecoveryBackups,
+      showToast,
+    ],
   );
 
   // Reflect pending edits in live SaveStatus
@@ -778,9 +881,15 @@ export function useModelerStore() {
     }
   }, [hasUnsavedChanges]);
 
-  // Write lightweight recovery snapshot quickly after meaningful edits
+  // Write lightweight recovery snapshot quickly after meaningful edits (Pro only)
   useEffect(() => {
-    if (!hasUnsavedChanges || !isModelerActiveRef.current) return;
+    if (
+      !capabilities.autosaveAllowed ||
+      !hasUnsavedChanges ||
+      !isModelerActiveRef.current
+    ) {
+      return;
+    }
     const snapProj = project;
     const timer = window.setTimeout(() => {
       if (!isModelerActiveRef.current) return;
@@ -788,11 +897,12 @@ export function useModelerStore() {
       void saveRecoveryDraftAsync(snapProj, thumb);
     }, 1800);
     return () => window.clearTimeout(timer);
-  }, [hasUnsavedChanges, meshRevision, project]);
+  }, [capabilities.autosaveAllowed, hasUnsavedChanges, meshRevision, project]);
 
-  // Post-major-operation debounced autosave
+  // Post-major-operation debounced autosave (Pro only)
   useEffect(() => {
     if (
+      !capabilities.autosaveAllowed ||
       !settings.autosaveEnabled ||
       !hasUnsavedChanges ||
       !isModelerActiveRef.current
@@ -807,6 +917,7 @@ export function useModelerStore() {
     }, 3200);
     return () => window.clearTimeout(timer);
   }, [
+    capabilities.autosaveAllowed,
     hasUnsavedChanges,
     meshRevision,
     performPersistProject,
@@ -814,9 +925,9 @@ export function useModelerStore() {
     settings.autosaveEnabled,
   ]);
 
-  // Periodic interval autosave
+  // Periodic interval autosave (Pro only)
   useEffect(() => {
-    if (!settings.autosaveEnabled) return;
+    if (!capabilities.autosaveAllowed || !settings.autosaveEnabled) return;
     const intervalMs = Math.max(10, settings.autosaveIntervalSec) * 1000;
     const id = window.setInterval(() => {
       if (!isModelerActiveRef.current || !hasUnsavedChanges || isSavingRef.current) {
@@ -826,6 +937,7 @@ export function useModelerStore() {
     }, intervalMs);
     return () => window.clearInterval(id);
   }, [
+    capabilities.autosaveAllowed,
     hasUnsavedChanges,
     performPersistProject,
     project,
@@ -845,16 +957,24 @@ export function useModelerStore() {
 
   const saveProjectSilent = useCallback(
     async (explicitThumbnail?: string | null): Promise<boolean> => {
+      if (capabilities.manualSaveRequired) {
+        return false;
+      }
       return performPersistProject(project, {
         explicitThumbnail,
         silent: true,
       });
     },
-    [performPersistProject, project],
+    [capabilities.manualSaveRequired, performPersistProject, project],
   );
 
   const saveProjectAs = useCallback(
     async (newName: string): Promise<boolean> => {
+      const gate = isProFeatureAllowed('multi_project', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return false;
+      }
       const trimmed = newName.trim() || `${project.name} (copia)`;
       const cloned = cloneProjectForDuplicate(project, trimmed);
       const capturedThumb = isModelerActiveRef.current
@@ -881,7 +1001,7 @@ export function useModelerStore() {
       showToast(`Proyecto guardado como "${res.project.name}"`);
       return true;
     },
-    [project, refreshGalleryData, showToast],
+    [capabilities, project, refreshGalleryData, showToast],
   );
 
   const hydrateProjectIntoEditor = useCallback(
@@ -908,12 +1028,58 @@ export function useModelerStore() {
     [releaseScreenModifiers, setSingleSelectedObject],
   );
 
+  const continueSavedDemoWorkspace = useCallback((): boolean => {
+    if (!demoWorkspaceRecord?.project) {
+      return false;
+    }
+    hydrateProjectIntoEditor(demoWorkspaceRecord.project);
+    setLastSavedAt(demoWorkspaceRecord.savedAt);
+    showToast(`Proyecto "${demoWorkspaceRecord.project.name}" restaurado`);
+    return true;
+  }, [demoWorkspaceRecord, hydrateProjectIntoEditor, showToast]);
+
+  const startFreshDemoWorkspace = useCallback(
+    async (options?: {
+      templateId?: ProjectTemplateId;
+      name?: string;
+      clearSaved?: boolean;
+    }): Promise<{ ok: boolean; error?: string }> => {
+      if (options?.clearSaved) {
+        const cleared = await clearDemoWorkspaceAsync();
+        if (!cleared.ok) {
+          const msg =
+            cleared.error ??
+            'No se pudo limpiar el espacio de trabajo guardado.';
+          showToast(msg);
+          return { ok: false, error: msg };
+        }
+        setDemoWorkspaceRecord(null);
+      }
+
+      const fresh = createProjectFromTemplate({
+        name: options?.name?.trim() || 'Espacio Demo',
+        templateId: options?.templateId ?? 'cube',
+        folderId: null,
+      });
+      hydrateProjectIntoEditor(fresh);
+      setLastSavedAt(options?.clearSaved ? null : (demoWorkspaceRecord?.savedAt ?? null));
+      showToast('Nuevo espacio de trabajo listo');
+      return { ok: true };
+    },
+    [demoWorkspaceRecord?.savedAt, hydrateProjectIntoEditor, showToast],
+  );
+
   const createProject = useCallback(
     async (
       name: string,
       templateId: ProjectTemplateId = 'cube',
       folderId: string | null = null,
     ): Promise<ProjectData | null> => {
+      const gate = isProFeatureAllowed('multi_project', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return null;
+      }
       const fresh = createProjectFromTemplate({
         name: name.trim() || 'Nuevo Proyecto',
         templateId,
@@ -933,7 +1099,7 @@ export function useModelerStore() {
       showToast(`Proyecto "${saved.name}" creado`);
       return saved;
     },
-    [hydrateProjectIntoEditor, refreshGalleryData, showToast],
+    [capabilities, hydrateProjectIntoEditor, refreshGalleryData, showToast],
   );
 
   const openProject = useCallback(
@@ -941,6 +1107,11 @@ export function useModelerStore() {
       projectId: string,
       options?: { skipRecoveryCheck?: boolean },
     ): Promise<boolean> => {
+      const gate = isProFeatureAllowed('gallery', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return false;
+      }
       const loaded =
         (await loadProjectFromAnyStorage(projectId)) ??
         loadProjectLocally(projectId);
@@ -969,7 +1140,7 @@ export function useModelerStore() {
       showToast(`Proyecto "${loaded.name}" abierto`);
       return true;
     },
-    [hydrateProjectIntoEditor, refreshGalleryData, showToast],
+    [capabilities, hydrateProjectIntoEditor, refreshGalleryData, showToast],
   );
 
   const applyRecoveryDraft = useCallback(
@@ -1010,6 +1181,11 @@ export function useModelerStore() {
 
   const renameProjectById = useCallback(
     async (projectId: string, newName: string): Promise<boolean> => {
+      const gate = isProFeatureAllowed('multi_project', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return false;
+      }
       const res = await renameSavedProjectAsync(projectId, newName);
       if (!res.ok || !res.project) {
         showToast(res.error ?? 'No se pudo renombrar el proyecto');
@@ -1022,11 +1198,16 @@ export function useModelerStore() {
       showToast(`Proyecto renombrado a "${res.project.name}"`);
       return true;
     },
-    [project.id, refreshGalleryData, showToast],
+    [capabilities, project.id, refreshGalleryData, showToast],
   );
 
   const duplicateProjectById = useCallback(
     async (projectId: string, newName?: string): Promise<ProjectData | null> => {
+      const gate = isProFeatureAllowed('multi_project', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return null;
+      }
       const res = await duplicateSavedProjectAsync(projectId, newName);
       if (!res.ok || !res.project) {
         showToast(res.error ?? 'No se pudo duplicar el proyecto');
@@ -1036,20 +1217,27 @@ export function useModelerStore() {
       showToast(`Copia "${res.project.name}" creada`);
       return res.project;
     },
-    [refreshGalleryData, showToast],
+    [capabilities, refreshGalleryData, showToast],
   );
 
   const removeSavedProject = useCallback(
     async (projectId: string) => {
+      const gate = isProFeatureAllowed('multi_project', capabilities);
+      if (!gate.allowed) return;
       deleteProjectLocally(projectId);
       await deleteProjectsAsync([projectId]);
       await refreshGalleryData();
     },
-    [refreshGalleryData],
+    [capabilities, refreshGalleryData],
   );
 
   const deleteProjectsByIds = useCallback(
     async (projectIds: string[]): Promise<boolean> => {
+      const gate = isProFeatureAllowed('multi_project', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return false;
+      }
       if (projectIds.length === 0) return true;
       const res = await deleteProjectsAsync(projectIds);
       if (!res.ok) {
@@ -1064,11 +1252,16 @@ export function useModelerStore() {
       );
       return true;
     },
-    [refreshGalleryData, showToast],
+    [capabilities, refreshGalleryData, showToast],
   );
 
   const moveProjectsToFolder = useCallback(
     async (projectIds: string[], folderId: string | null): Promise<boolean> => {
+      const gate = isProFeatureAllowed('folders', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return false;
+      }
       if (projectIds.length === 0) return true;
       const res = await moveProjectsToFolderAsync(projectIds, folderId);
       if (!res.ok) {
@@ -1086,11 +1279,16 @@ export function useModelerStore() {
       );
       return true;
     },
-    [project.id, refreshGalleryData, showToast],
+    [capabilities, project.id, refreshGalleryData, showToast],
   );
 
   const createFolder = useCallback(
     async (name: string): Promise<ProjectFolder | null> => {
+      const gate = isProFeatureAllowed('folders', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return null;
+      }
       const res = await createProjectFolderAsync(name);
       if (!res.ok || !res.folder) {
         showToast(res.error ?? 'No se pudo crear la carpeta');
@@ -1100,11 +1298,16 @@ export function useModelerStore() {
       showToast(`Carpeta "${res.folder.name}" creada`);
       return res.folder;
     },
-    [refreshGalleryData, showToast],
+    [capabilities, refreshGalleryData, showToast],
   );
 
   const renameFolder = useCallback(
     async (folderId: string, newName: string): Promise<boolean> => {
+      const gate = isProFeatureAllowed('folders', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return false;
+      }
       const res = await renameProjectFolderAsync(folderId, newName);
       if (!res.ok) {
         showToast(res.error ?? 'No se pudo renombrar la carpeta');
@@ -1114,7 +1317,7 @@ export function useModelerStore() {
       showToast('Carpeta renombrada');
       return true;
     },
-    [refreshGalleryData, showToast],
+    [capabilities, refreshGalleryData, showToast],
   );
 
   const deleteFolder = useCallback(
@@ -1122,6 +1325,11 @@ export function useModelerStore() {
       folderId: string,
       resolution: DeleteFolderResolution = { mode: 'unfile' },
     ): Promise<boolean> => {
+      const gate = isProFeatureAllowed('folders', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return false;
+      }
       const res = await deleteProjectFolderAsync(folderId, resolution);
       if (!res.ok) {
         showToast(res.error ?? 'No se pudo eliminar la carpeta');
@@ -1138,13 +1346,18 @@ export function useModelerStore() {
       showToast('Carpeta eliminada (proyectos conservados)');
       return true;
     },
-    [project.folderId, refreshGalleryData, showToast],
+    [capabilities, project.folderId, refreshGalleryData, showToast],
   );
 
   const exportNativeProject = useCallback(
     async (
       targetProjectId?: string,
     ): Promise<{ filename: string; content: string; project: ProjectData } | null> => {
+      const gate = isProFeatureAllowed('native_project_file', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return null;
+      }
       const source =
         !targetProjectId || targetProjectId === project.id
           ? project
@@ -1170,7 +1383,7 @@ export function useModelerStore() {
         project: source,
       };
     },
-    [folders, project, showToast],
+    [capabilities, folders, project, showToast],
   );
 
   const importNativeProject = useCallback(
@@ -1178,6 +1391,13 @@ export function useModelerStore() {
       rawText: string,
       targetFolderId: string | null = null,
     ): Promise<{ ok: boolean; project?: ProjectData; error?: string }> => {
+      const gate = isProFeatureAllowed('native_project_file', capabilities);
+      if (!gate.allowed) {
+        return {
+          ok: false,
+          error: gate.reason ?? 'Función reservada para LOOPA Pro.',
+        };
+      }
       const parsed = parseNativeProjectFile(rawText);
       if (!parsed.ok) {
         return { ok: false, error: parsed.error };
@@ -1213,7 +1433,7 @@ export function useModelerStore() {
       showToast(`Proyecto "${res.project.name}" importado`);
       return { ok: true, project: res.project };
     },
-    [refreshGalleryData, showToast],
+    [capabilities, refreshGalleryData, showToast],
   );
 
   const addPrimitive = useCallback(
@@ -1221,7 +1441,17 @@ export function useModelerStore() {
       type: PrimitiveType,
       options?: PrimitiveOptions,
       targetCollectionId?: string,
-    ) => {
+    ): boolean => {
+      const limitCheck = canAddUserModelingObjects(
+        activeObjects,
+        1,
+        capabilities,
+      );
+      if (!limitCheck.allowed) {
+        showToast(limitCheck.reason ?? DEMO_OBJECT_LIMIT_MESSAGE);
+        return false;
+      }
+
       pushHistory(makeSnapshot());
       const mesh = createPrimitiveMesh(type, options);
       const baseName = PRIMITIVE_LABELS[type];
@@ -1272,11 +1502,13 @@ export function useModelerStore() {
       setHasUnsavedChanges(true);
       setMeshRevision((r) => r + 1);
       showToast(`${name} agregado`);
+      return true;
     },
     [
       activeObjects,
       activeScene.activeCollectionId,
       activeScene.collections,
+      capabilities,
       makeSnapshot,
       projectMaterials,
       pushHistory,
@@ -1681,13 +1913,23 @@ export function useModelerStore() {
   );
 
   const duplicateObjectById = useCallback(
-    (objectId: string) => {
+    (objectId: string): boolean => {
       const targetScene =
         project.scenes.find((s) => s.objects.some((o) => o.id === objectId)) ??
         null;
       const target =
         targetScene?.objects.find((o) => o.id === objectId) ?? null;
-      if (!targetScene || !target) return;
+      if (!targetScene || !target) return false;
+
+      const limitCheck = canAddUserModelingObjects(
+        targetScene.objects,
+        1,
+        capabilities,
+      );
+      if (!limitCheck.allowed) {
+        showToast(limitCheck.reason ?? DEMO_OBJECT_LIMIT_MESSAGE);
+        return false;
+      }
 
       pushHistory(makeSnapshot());
       const copy: SceneObjectData = {
@@ -1719,8 +1961,10 @@ export function useModelerStore() {
       setHasUnsavedChanges(true);
       setMeshRevision((r) => r + 1);
       showToast(`Objeto duplicado: ${copy.name}`);
+      return true;
     },
     [
+      capabilities,
       makeSnapshot,
       project.scenes,
       pushHistory,
@@ -1731,9 +1975,9 @@ export function useModelerStore() {
     ],
   );
 
-  const duplicateSelectedObject = useCallback(() => {
-    if (!selectedObject) return;
-    duplicateObjectById(selectedObject.id);
+  const duplicateSelectedObject = useCallback((): boolean => {
+    if (!selectedObject) return false;
+    return duplicateObjectById(selectedObject.id);
   }, [duplicateObjectById, selectedObject]);
 
   const applyObjectTransform = useCallback(() => {
@@ -1854,18 +2098,18 @@ export function useModelerStore() {
     showToast,
   ]);
 
-  const separateSelectedGeometry = useCallback(() => {
+  const separateSelectedGeometry = useCallback((): boolean => {
     if (!selectedObject || workMode !== 'edit') {
       showToast('Entra en Modo Edición y selecciona geometría para separar');
-      return;
+      return false;
     }
     if (!isEditableMeshObject(selectedObject)) {
       showToast('Este objeto no admite separación de geometría');
-      return;
+      return false;
     }
     if (selectedObject.locked) {
       showToast('El objeto está bloqueado');
-      return;
+      return false;
     }
 
     const sourceMesh = EditableMesh.fromJSON(selectedObject.mesh);
@@ -1876,7 +2120,17 @@ export function useModelerStore() {
     );
     if (sepRes.error || !sepRes.remainingMesh || !sepRes.separatedMesh) {
       showToast(sepRes.error ?? 'No se pudo separar la geometría seleccionada');
-      return;
+      return false;
+    }
+
+    const limitCheck = canAddUserModelingObjects(
+      activeObjects,
+      1,
+      capabilities,
+    );
+    if (!limitCheck.allowed) {
+      showToast(limitCheck.reason ?? DEMO_OBJECT_LIMIT_MESSAGE);
+      return false;
     }
 
     setOperatorSession(null);
@@ -1927,8 +2181,10 @@ export function useModelerStore() {
     setHasUnsavedChanges(true);
     setMeshRevision((r) => r + 1);
     showToast(`Geometría separada en "${newName}"`);
+    return true;
   }, [
     activeObjects,
+    capabilities,
     editSelectionMode,
     makeSnapshot,
     pushHistory,
@@ -2242,8 +2498,22 @@ export function useModelerStore() {
    * Model Import (OBJ / STL) & Reference Image Actions
    * ======================================================================== */
   const importObjParts = useCallback(
-    (result: ObjImportResult, targetCollectionId?: string) => {
-      if (result.parts.length === 0) return;
+    (result: ObjImportResult, targetCollectionId?: string): boolean => {
+      const gate = isProFeatureAllowed('import_obj', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return false;
+      }
+      if (result.parts.length === 0) return false;
+      const limitCheck = canAddUserModelingObjects(
+        activeObjects,
+        result.parts.length,
+        capabilities,
+      );
+      if (!limitCheck.allowed) {
+        showToast(limitCheck.reason ?? DEMO_OBJECT_LIMIT_MESSAGE);
+        return false;
+      }
       pushHistory(makeSnapshot());
 
       const baseColId =
@@ -2339,11 +2609,14 @@ export function useModelerStore() {
           ? `OBJ "${result.baseName}" importado (${newObjects.length} grupos)`
           : `OBJ "${newObjects[0].name}" importado`;
       showToast(summary);
+      return true;
     },
     [
+      activeObjects,
       activeScene.activeCollectionId,
       activeScene.collections,
       activeScene.id,
+      capabilities,
       makeSnapshot,
       project,
       projectMaterials,
@@ -2355,7 +2628,21 @@ export function useModelerStore() {
   );
 
   const importStlResult = useCallback(
-    (result: StlImportResult, targetCollectionId?: string) => {
+    (result: StlImportResult, targetCollectionId?: string): boolean => {
+      const gate = isProFeatureAllowed('import_stl', capabilities);
+      if (!gate.allowed) {
+        showToast(gate.reason ?? 'Función reservada para LOOPA Pro.');
+        return false;
+      }
+      const limitCheck = canAddUserModelingObjects(
+        activeObjects,
+        1,
+        capabilities,
+      );
+      if (!limitCheck.allowed) {
+        showToast(limitCheck.reason ?? DEMO_OBJECT_LIMIT_MESSAGE);
+        return false;
+      }
       pushHistory(makeSnapshot());
 
       const resolvedCollectionId =
@@ -2412,11 +2699,13 @@ export function useModelerStore() {
       showToast(
         `STL "${finalName}" importado (${result.triangleCount.toLocaleString()} triángulos)`,
       );
+      return true;
     },
     [
       activeObjects,
       activeScene.activeCollectionId,
       activeScene.collections,
+      capabilities,
       makeSnapshot,
       projectMaterials,
       pushHistory,
@@ -2430,6 +2719,13 @@ export function useModelerStore() {
     async (
       modelProject: ProjectData,
     ): Promise<{ ok: boolean; project?: ProjectData; error?: string }> => {
+      const gate = isProFeatureAllowed('multi_project', capabilities);
+      if (!gate.allowed) {
+        return {
+          ok: false,
+          error: gate.reason ?? 'Función reservada para LOOPA Pro.',
+        };
+      }
       const normalized = syncProjectMaterialsAndObjects(modelProject);
       const res = await saveProjectAsync(normalized, {
         thumbnailDataUrl: normalized.thumbnailDataUrl ?? null,
@@ -2446,7 +2742,7 @@ export function useModelerStore() {
       showToast(`Modelo "${res.project.name}" importado como proyecto`);
       return { ok: true, project: res.project };
     },
-    [refreshGalleryData, showToast],
+    [capabilities, refreshGalleryData, showToast],
   );
 
   /* ==========================================================================
@@ -5193,6 +5489,15 @@ export function useModelerStore() {
   );
 
   return {
+    capabilities,
+    userObjectCount,
+    maxSceneObjects: capabilities.maxSceneObjects,
+    demoWorkspaceRecord,
+    demoStartupChecked,
+    demoStartupError,
+    demoSavedSuccessNonce,
+    continueSavedDemoWorkspace,
+    startFreshDemoWorkspace,
     project,
     scenes: renderedScenes,
     activeScene,

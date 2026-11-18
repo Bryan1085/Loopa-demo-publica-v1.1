@@ -45,12 +45,21 @@ const LAST_GIZMO_MODE_KEY = 'forma3d_last_gizmo_mode_v1';
 const LEFT_TOOLBAR_COLLAPSED_KEY = 'forma3d_left_toolbar_collapsed_v1';
 
 const IDB_NAME = 'forma3d_projects_db_v1';
-const IDB_VERSION = 2;
+const IDB_VERSION = 3;
 const STORE_PROJECTS = 'projects';
 const STORE_FOLDERS = 'folders';
 const STORE_THUMBNAILS = 'thumbnails';
 const STORE_RECOVERY = 'recovery';
 const STORE_BACKUPS = 'backups';
+const STORE_DEMO_WORKSPACE = 'demo_workspace';
+const DEMO_WORKSPACE_KEY = 'active_demo_workspace';
+
+export interface DemoWorkspaceRecord {
+  key: 'active_demo_workspace';
+  savedAt: number;
+  project: ProjectData;
+  thumbnailDataUrl?: string | null;
+}
 
 interface ThumbnailRecord {
   projectId: string;
@@ -614,6 +623,9 @@ function openProjectsDb(): Promise<IDBDatabase | null> {
         }
         if (!db.objectStoreNames.contains(STORE_BACKUPS)) {
           db.createObjectStore(STORE_BACKUPS, { keyPath: 'projectId' });
+        }
+        if (!db.objectStoreNames.contains(STORE_DEMO_WORKSPACE)) {
+          db.createObjectStore(STORE_DEMO_WORKSPACE, { keyPath: 'key' });
         }
       };
       req.onsuccess = () => {
@@ -1368,3 +1380,147 @@ export function loadInitialProject(): ProjectData {
   }
   return createNewProject('Cubo Inicial', 'cube');
 }
+
+/* ============================================================================
+ * LOOPA Demo Single-Workspace Persistent Storage (IndexedDB Authoritative)
+ * ========================================================================== */
+
+export async function loadDemoWorkspaceAsync(): Promise<{
+  ok: boolean;
+  record: DemoWorkspaceRecord | null;
+  error?: string;
+}> {
+  const db = await openProjectsDb();
+  if (!db) {
+    return {
+      ok: false,
+      record: null,
+      error:
+        'El almacenamiento persistente (IndexedDB) no está disponible en este navegador.',
+    };
+  }
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(STORE_DEMO_WORKSPACE, 'readonly');
+      const req = tx.objectStore(STORE_DEMO_WORKSPACE).get(DEMO_WORKSPACE_KEY);
+      req.onsuccess = () => {
+        const raw = req.result as DemoWorkspaceRecord | undefined;
+        if (!raw?.project) {
+          resolve({ ok: true, record: null });
+          return;
+        }
+        const normalized = normalizeProjectHierarchy(raw.project);
+        if (!normalized) {
+          resolve({
+            ok: false,
+            record: null,
+            error: 'El proyecto guardado localmente está dañado o incompleto.',
+          });
+          return;
+        }
+        resolve({
+          ok: true,
+          record: {
+            key: DEMO_WORKSPACE_KEY,
+            savedAt:
+              typeof raw.savedAt === 'number'
+                ? raw.savedAt
+                : normalized.updatedAt,
+            project: normalized,
+            thumbnailDataUrl:
+              raw.thumbnailDataUrl ?? normalized.thumbnailDataUrl ?? null,
+          },
+        });
+      };
+      req.onerror = () => {
+        resolve({
+          ok: false,
+          record: null,
+          error:
+            req.error?.message ??
+            'No se pudo leer el espacio de trabajo guardado.',
+        });
+      };
+    } catch (err) {
+      resolve({
+        ok: false,
+        record: null,
+        error:
+          err instanceof Error
+            ? err.message
+            : 'Error al acceder al almacenamiento local del navegador.',
+      });
+    }
+  });
+}
+
+export async function saveDemoWorkspaceAsync(
+  project: ProjectData,
+  thumbnailDataUrl?: string | null,
+): Promise<SaveOperationResult> {
+  const db = await openProjectsDb();
+  if (!db) {
+    return {
+      ok: false,
+      error:
+        'No se pudo guardar: IndexedDB no está disponible en este navegador o está bloqueado.',
+    };
+  }
+
+  const now = Date.now();
+  const nextThumb =
+    thumbnailDataUrl !== undefined
+      ? thumbnailDataUrl
+      : project.thumbnailDataUrl ?? null;
+
+  const updatedProject: ProjectData = {
+    ...project,
+    version: 2,
+    coordinateSystem: 'z-up',
+    updatedAt: now,
+    ...(nextThumb !== null
+      ? {
+          thumbnailDataUrl: nextThumb,
+          thumbnailUpdatedAt: now,
+        }
+      : {}),
+  };
+
+  const record: DemoWorkspaceRecord = {
+    key: DEMO_WORKSPACE_KEY,
+    savedAt: now,
+    project: updatedProject,
+    thumbnailDataUrl: nextThumb,
+  };
+
+  const putRes = await idbPut(STORE_DEMO_WORKSPACE, record);
+  if (!putRes.ok) {
+    return {
+      ok: false,
+      quotaExceeded: putRes.quotaExceeded,
+      error:
+        putRes.error ??
+        'No se pudo guardar el proyecto en el almacenamiento del navegador.',
+    };
+  }
+
+  return {
+    ok: true,
+    project: updatedProject,
+  };
+}
+
+export async function clearDemoWorkspaceAsync(): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
+  const db = await openProjectsDb();
+  if (!db) {
+    return {
+      ok: false,
+      error: 'IndexedDB no está disponible en este navegador.',
+    };
+  }
+  return idbDelete(STORE_DEMO_WORKSPACE, DEMO_WORKSPACE_KEY);
+}
+

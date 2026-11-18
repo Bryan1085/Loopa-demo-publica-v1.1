@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { DemoProInfoModal } from './components/DemoProInfoModal';
+import { DemoWelcomeModal } from './components/DemoWelcomeModal';
+import { FeedbackModal } from './components/FeedbackModal';
 import {
   ExportFormat,
   ExportModelModal,
@@ -15,6 +18,7 @@ import {
   ReturnToGalleryModal,
 } from './components/GalleryModals';
 import { LeftToolSidebar } from './components/LeftToolSidebar';
+import { NewDemoWorkspaceModal } from './components/NewDemoWorkspaceModal';
 import { NewProjectModal } from './components/NewProjectModal';
 import { OutlinerPanel } from './components/OutlinerPanel';
 import { ProjectGallery } from './components/ProjectGallery';
@@ -22,6 +26,9 @@ import { ProjectModal, ProjectModalMode } from './components/ProjectModal';
 import { SettingsModal, SettingsTabId } from './components/SettingsModal';
 import { SceneStatsInfo, TopBar } from './components/TopBar';
 import { Viewport3D, Viewport3DHandle } from './components/Viewport3D';
+import { isProFeatureAllowed, ProFeatureKey } from './config/appCapabilities';
+import { getAppDocumentTitle } from './config/brand';
+import { collectFeedbackTechnicalMetadata } from './core/feedback/feedbackService';
 import {
   LoadedImageReferencePayload,
   loadReferenceImageFile,
@@ -44,16 +51,27 @@ import {
   SceneObjectData,
   TouchModifierState,
 } from './core/project/types';
-import { getAppDocumentTitle } from './config/brand';
 import { EMPTY_MODIFIER_STATE } from './engine/TouchGestureManager';
 import { useModelerStore } from './state/useModelerStore';
 
 export default function App() {
   const store = useModelerStore();
 
-  const [activeView, setActiveView] = useState<'gallery' | 'modeler'>('gallery');
+  const [activeView, setActiveView] = useState<'gallery' | 'modeler'>(() =>
+    store.capabilities.galleryEnabled ? 'gallery' : 'modeler',
+  );
   const [showReturnGuardModal, setShowReturnGuardModal] = useState(false);
   const [exitingToGallery, setExitingToGallery] = useState(false);
+
+  // LOOPA Demo modal & startup flow states
+  const [demoWelcomeHandled, setDemoWelcomeHandled] = useState(false);
+  const [showDemoWelcomeModal, setShowDemoWelcomeModal] = useState(false);
+  const [showNewDemoWorkspaceModal, setShowNewDemoWorkspaceModal] =
+    useState(false);
+  const [proInfoFeature, setProInfoFeature] = useState<
+    ProFeatureKey | null | undefined
+  >(undefined);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
 
   const [showOutliner, setShowOutliner] = useState(() =>
     typeof window !== 'undefined' ? window.innerWidth >= 1024 : true,
@@ -108,8 +126,21 @@ export default function App() {
   }, [activeView, store.setModelerActive]);
 
   useEffect(() => {
-    document.title = getAppDocumentTitle();
-  }, []);
+    document.title = store.capabilities.localSingleWorkspaceOnly
+      ? getAppDocumentTitle('Demo')
+      : getAppDocumentTitle();
+  }, [store.capabilities.localSingleWorkspaceOnly]);
+
+  // Open Demo welcome / saved workspace prompt once IndexedDB startup check finishes
+  useEffect(() => {
+    if (!store.capabilities.localSingleWorkspaceOnly) return;
+    if (!store.demoStartupChecked || demoWelcomeHandled) return;
+    setShowDemoWelcomeModal(true);
+  }, [
+    demoWelcomeHandled,
+    store.capabilities.localSingleWorkspaceOnly,
+    store.demoStartupChecked,
+  ]);
 
   // Prompt confirmation before closing browser tab if there are unsaved changes in active modeler session
   useEffect(() => {
@@ -143,6 +174,11 @@ export default function App() {
    * ======================================================================== */
   const handleObjFilesSelected = useCallback(
     async (fileList: FileList | null) => {
+      const gate = isProFeatureAllowed('import_obj', store.capabilities);
+      if (!gate.allowed) {
+        setProInfoFeature('import_obj');
+        return;
+      }
       if (!fileList || fileList.length === 0) return;
       const files = Array.from(fileList);
       const objFile = files.find((f) => f.name.toLowerCase().endsWith('.obj'));
@@ -213,16 +249,22 @@ export default function App() {
     [store],
   );
 
-  const handleStlFileSelected = useCallback(async (fileList: FileList | null) => {
-    if (!fileList || fileList.length === 0) return;
-    const file = fileList[0];
-    if (!file.name.toLowerCase().endsWith('.stl')) {
-      setIoError({
-        title: 'Archivo no compatible',
-        message: 'Selecciona un archivo 3D con extensión .stl.',
-      });
-      return;
-    }
+  const handleStlFileSelected = useCallback(
+    async (fileList: FileList | null) => {
+      const gate = isProFeatureAllowed('import_stl', store.capabilities);
+      if (!gate.allowed) {
+        setProInfoFeature('import_stl');
+        return;
+      }
+      if (!fileList || fileList.length === 0) return;
+      const file = fileList[0];
+      if (!file.name.toLowerCase().endsWith('.stl')) {
+        setIoError({
+          title: 'Archivo no compatible',
+          message: 'Selecciona un archivo 3D con extensión .stl.',
+        });
+        return;
+      }
 
     if (file.size === 0) {
       setIoError({
@@ -258,7 +300,7 @@ export default function App() {
             : 'El archivo STL está dañado o no es compatible.',
       });
     }
-  }, []);
+  }, [store.capabilities]);
 
   const handleConfirmStlImport = useCallback(
     async (scale: number) => {
@@ -477,6 +519,11 @@ export default function App() {
    * ======================================================================== */
   const openExportModal = useCallback(
     (format: ExportFormat, scope: ExportScope) => {
+      const gate = isProFeatureAllowed('export_model', store.capabilities);
+      if (!gate.allowed) {
+        setProInfoFeature('export_model');
+        return;
+      }
       if (scope === 'selected' && !store.selectedObjectId) {
         store.showToast('Selecciona un objeto o exporta la escena completa');
         return;
@@ -488,6 +535,12 @@ export default function App() {
 
   const handleExecuteExport = useCallback(
     async (config: ExportRequestConfig) => {
+      const gate = isProFeatureAllowed('export_model', store.capabilities);
+      if (!gate.allowed) {
+        setExportModalConfig(null);
+        setProInfoFeature('export_model');
+        return;
+      }
       const sceneObjects = store.activeScene.objects;
       let targets: SceneObjectData[] = [];
       if (config.scope === 'selected') {
@@ -622,6 +675,10 @@ export default function App() {
   );
 
   const handleReturnToGallery = useCallback(async () => {
+    if (!store.capabilities.galleryEnabled) {
+      setProInfoFeature('gallery');
+      return;
+    }
     if (exitingToGallery) return;
     if (store.hasUnsavedChanges) {
       if (store.settings.autosaveEnabled) {
@@ -645,6 +702,11 @@ export default function App() {
   }, [exitingToGallery, store]);
 
   const handleExportNativeFromModeler = useCallback(async () => {
+    const gate = isProFeatureAllowed('native_project_file', store.capabilities);
+    if (!gate.allowed) {
+      setProInfoFeature('native_project_file');
+      return;
+    }
     const res = await store.exportNativeProject();
     if (!res) return;
     triggerFileDownload(
@@ -657,6 +719,11 @@ export default function App() {
 
   const handleImportNativeFromModeler = useCallback(
     async (fileList: FileList | null) => {
+      const gate = isProFeatureAllowed('native_project_file', store.capabilities);
+      if (!gate.allowed) {
+        setProInfoFeature('native_project_file');
+        return;
+      }
       if (!fileList || fileList.length === 0) return;
       try {
         const text = await fileList[0].text();
@@ -684,9 +751,13 @@ export default function App() {
     [enterModelerWithResetCamera, store],
   );
 
+  const storeRef = useRef(store);
+  storeRef.current = store;
+
   // Keyboard shortcuts for iPad Magic Keyboard / Desktop testing (only active inside modeler)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const store = storeRef.current;
       if (activeView !== 'modeler') return;
       const target = e.target as HTMLElement | null;
       if (
@@ -883,7 +954,7 @@ export default function App() {
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeView, store]);
+  }, [activeView]);
 
   const canEditSelected = Boolean(
     store.selectedObject &&
@@ -984,10 +1055,13 @@ export default function App() {
 
       {/* A. Barra Superior Compacta y Desplegable */}
       <TopBar
+        capabilities={store.capabilities}
         projectName={store.project.name}
         hasUnsavedChanges={store.hasUnsavedChanges}
         saveStatus={store.saveStatus}
         lastSaveError={store.lastSaveError}
+        demoSavedSuccessNonce={store.demoSavedSuccessNonce}
+        userObjectCount={store.userObjectCount}
         workMode={store.workMode}
         editSelectionMode={store.editSelectionMode}
         canEditSelected={canEditSelected}
@@ -1002,16 +1076,38 @@ export default function App() {
         onReturnToGallery={() => {
           void handleReturnToGallery();
         }}
-        onCreateProjectModal={() => setProjectModalMode('create')}
-        onOpenProjectModal={() => setProjectModalMode('open')}
+        onCreateProjectModal={() => {
+          if (!store.capabilities.multiProjectEnabled) {
+            setShowNewDemoWorkspaceModal(true);
+            return;
+          }
+          setProjectModalMode('create');
+        }}
+        onOpenProjectModal={() => {
+          if (!store.capabilities.multiProjectEnabled) {
+            setProInfoFeature('multi_project');
+            return;
+          }
+          setProjectModalMode('open');
+        }}
         onSaveProject={() => {
           void store.saveProject();
         }}
-        onSaveAsProjectModal={() => setProjectModalMode('save_as')}
+        onSaveAsProjectModal={() => {
+          if (!store.capabilities.multiProjectEnabled) {
+            setProInfoFeature('multi_project');
+            return;
+          }
+          setProjectModalMode('save_as');
+        }}
         onImportNativeProject={() => nativeProjectInputRef.current?.click()}
         onExportNativeProject={() => {
           void handleExportNativeFromModeler();
         }}
+        onNewDemoWorkspace={() => setShowNewDemoWorkspaceModal(true)}
+        onOpenDemoWelcome={() => setShowDemoWelcomeModal(true)}
+        onOpenProInfo={(feature) => setProInfoFeature(feature ?? null)}
+        onOpenFeedback={() => setShowFeedbackModal(true)}
         onOpenSettingsModal={() => setSettingsModalTab('touch')}
         onImportObj={() => objInputRef.current?.click()}
         onImportStl={() => stlInputRef.current?.click()}
@@ -1235,6 +1331,8 @@ export default function App() {
             activeSceneId={store.activeSceneId}
             activeCollectionId={store.activeCollectionId}
             objects={store.renderedObjects}
+            userObjectCount={store.userObjectCount}
+            maxSceneObjects={store.maxSceneObjects}
             selectedObjectId={store.selectedObjectId}
             selectedObjectIds={store.selectedObjectIds}
             workMode={store.workMode}
@@ -1294,8 +1392,8 @@ export default function App() {
         )}
       </div>
 
-      {/* Project Gallery Launch Screen Overlay (preserves single ViewportEngine instance underneath) */}
-      {activeView === 'gallery' && (
+      {/* Project Gallery Launch Screen Overlay (LOOPA Pro only — preserved intact) */}
+      {store.capabilities.galleryEnabled && activeView === 'gallery' && (
         <ProjectGallery
           projects={store.savedProjects}
           folders={store.folders}
@@ -1327,53 +1425,55 @@ export default function App() {
         />
       )}
 
-      {/* Modals */}
-      {projectModalMode === 'create' && (
-        <NewProjectModal
-          folders={store.folders}
-          defaultFolderId={store.project.folderId ?? null}
-          onClose={() => setProjectModalMode(null)}
-          onCreate={async ({ name, templateId, folderId }) => {
-            const created = await handleCreateProjectFromGallery(
-              name,
-              templateId,
-              folderId,
-            );
-            if (created) setProjectModalMode(null);
-          }}
-        />
-      )}
+      {/* Pro Multi-Project Modals (gated by capabilities.multiProjectEnabled) */}
+      {store.capabilities.multiProjectEnabled &&
+        projectModalMode === 'create' && (
+          <NewProjectModal
+            folders={store.folders}
+            defaultFolderId={store.project.folderId ?? null}
+            onClose={() => setProjectModalMode(null)}
+            onCreate={async ({ name, templateId, folderId }) => {
+              const created = await handleCreateProjectFromGallery(
+                name,
+                templateId,
+                folderId,
+              );
+              if (created) setProjectModalMode(null);
+            }}
+          />
+        )}
 
-      {(projectModalMode === 'open' || projectModalMode === 'save_as') && (
-        <ProjectModal
-          initialMode={projectModalMode}
-          currentProjectId={store.project.id}
-          currentProjectName={store.project.name}
-          savedProjects={store.savedProjects}
-          onClose={() => setProjectModalMode(null)}
-          onCreateProject={(name) => {
-            void handleCreateProjectFromGallery(
-              name,
-              'cube',
-              store.project.folderId ?? null,
-            );
-          }}
-          onSaveAsProject={(name) => {
-            void store.saveProjectAs(name);
-          }}
-          onOpenProject={(id) => {
-            void handleOpenProjectFromGallery(id);
-          }}
-          onSaveCurrent={() => {
-            void store.saveProject();
-          }}
-          onDeleteProject={(id) => {
-            void store.removeSavedProject(id);
-          }}
-        />
-      )}
+      {store.capabilities.multiProjectEnabled &&
+        (projectModalMode === 'open' || projectModalMode === 'save_as') && (
+          <ProjectModal
+            initialMode={projectModalMode}
+            currentProjectId={store.project.id}
+            currentProjectName={store.project.name}
+            savedProjects={store.savedProjects}
+            onClose={() => setProjectModalMode(null)}
+            onCreateProject={(name) => {
+              void handleCreateProjectFromGallery(
+                name,
+                'cube',
+                store.project.folderId ?? null,
+              );
+            }}
+            onSaveAsProject={(name) => {
+              void store.saveProjectAs(name);
+            }}
+            onOpenProject={(id) => {
+              void handleOpenProjectFromGallery(id);
+            }}
+            onSaveCurrent={() => {
+              void store.saveProject();
+            }}
+            onDeleteProject={(id) => {
+              void store.removeSavedProject(id);
+            }}
+          />
+        )}
 
-      {showReturnGuardModal && (
+      {store.capabilities.galleryEnabled && showReturnGuardModal && (
         <ReturnToGalleryModal
           projectName={store.project.name}
           saving={exitingToGallery}
@@ -1394,7 +1494,7 @@ export default function App() {
         />
       )}
 
-      {store.pendingRecovery && (
+      {store.capabilities.galleryEnabled && store.pendingRecovery && (
         <RecoveryPromptModal
           record={store.pendingRecovery}
           onCancel={store.dismissPendingRecovery}
@@ -1415,11 +1515,88 @@ export default function App() {
         />
       )}
 
+      {/* LOOPA Demo Welcome / Saved Workspace Recovery Modal */}
+      {store.capabilities.localSingleWorkspaceOnly && showDemoWelcomeModal && (
+        <DemoWelcomeModal
+          savedRecord={demoWelcomeHandled ? null : store.demoWorkspaceRecord}
+          startupError={store.demoStartupError}
+          onContinueSaved={() => {
+            store.continueSavedDemoWorkspace();
+            setDemoWelcomeHandled(true);
+            setShowDemoWelcomeModal(false);
+            window.requestAnimationFrame(() => {
+              viewportRef.current?.resetCamera();
+            });
+          }}
+          onStartFresh={async (clearSaved) => {
+            await store.startFreshDemoWorkspace({ clearSaved });
+            setDemoWelcomeHandled(true);
+            setShowDemoWelcomeModal(false);
+            window.requestAnimationFrame(() => {
+              viewportRef.current?.resetCamera();
+            });
+          }}
+          onOpenProInfo={() => setProInfoFeature(null)}
+          onClose={
+            demoWelcomeHandled ? () => setShowDemoWelcomeModal(false) : undefined
+          }
+        />
+      )}
+
+      {/* LOOPA Demo New Workspace Modal */}
+      {store.capabilities.localSingleWorkspaceOnly &&
+        showNewDemoWorkspaceModal && (
+          <NewDemoWorkspaceModal
+            hasUnsavedChanges={store.hasUnsavedChanges}
+            hasSavedWorkspace={Boolean(store.demoWorkspaceRecord)}
+            onCancel={() => setShowNewDemoWorkspaceModal(false)}
+            onConfirmCreate={async ({ templateId, clearSaved }) => {
+              await store.startFreshDemoWorkspace({
+                templateId,
+                clearSaved,
+              });
+              setShowNewDemoWorkspaceModal(false);
+              window.requestAnimationFrame(() => {
+                viewportRef.current?.resetCamera();
+              });
+            }}
+          />
+        )}
+
+      {/* LOOPA Pro Info Modal */}
+      {proInfoFeature !== undefined && (
+        <DemoProInfoModal
+          highlightedFeature={proInfoFeature}
+          onClose={() => setProInfoFeature(undefined)}
+        />
+      )}
+
+      {/* Feedback & Bug Report Modal */}
+      {store.capabilities.feedbackEnabled && showFeedbackModal && (
+        <FeedbackModal
+          technicalMetadata={collectFeedbackTechnicalMetadata({
+            workMode: store.workMode,
+            editSelectionMode: store.editSelectionMode,
+            activeTool: store.activeTool,
+            sceneObjectCount: store.userObjectCount,
+            capabilities: store.capabilities,
+          })}
+          onCaptureScreenshot={() =>
+            viewportRef.current?.captureScreenshot() ?? null
+          }
+          onClose={() => setShowFeedbackModal(false)}
+          onNotify={store.showToast}
+        />
+      )}
+
       {settingsModalTab && (
         <SettingsModal
+          capabilities={store.capabilities}
+          userObjectCount={store.userObjectCount}
           settings={store.settings}
           sceneStats={sceneStats}
           initialTab={settingsModalTab}
+          onOpenProInfo={(feature) => setProInfoFeature(feature ?? null)}
           onUpdateSettings={store.updateSettings}
           onUpdateTouchSettings={store.updateTouchSettings}
           onUpdateTouchModifier={store.updateTouchModifier}

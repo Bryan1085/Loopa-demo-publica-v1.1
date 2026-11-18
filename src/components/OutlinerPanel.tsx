@@ -69,6 +69,8 @@ interface OutlinerPanelProps {
   activeSceneId: string;
   activeCollectionId: string;
   objects: SceneObjectData[];
+  userObjectCount?: number;
+  maxSceneObjects?: number | null;
   selectedObjectId: string | null;
   selectedObjectIds?: Set<string>;
   workMode: WorkMode;
@@ -238,6 +240,8 @@ export const OutlinerPanel: React.FC<OutlinerPanelProps> = ({
   activeSceneId,
   activeCollectionId,
   objects,
+  userObjectCount,
+  maxSceneObjects = null,
   selectedObjectId,
   selectedObjectIds,
   workMode,
@@ -977,7 +981,7 @@ export const OutlinerPanel: React.FC<OutlinerPanelProps> = ({
           aria-labelledby="outliner-tab-hierarchy"
           className="flex-1 min-h-0 flex flex-col"
         >
-          {/* Quick Creation Header: + Escena / + Colección */}
+          {/* Quick Creation Header: + Escena / + Colección + optional Demo counter */}
           <div className="px-2.5 py-2 border-b border-[#262931] flex items-center justify-between gap-1.5 shrink-0">
             <button
               type="button"
@@ -997,6 +1001,15 @@ export const OutlinerPanel: React.FC<OutlinerPanelProps> = ({
               <FolderPlus className="w-3.5 h-3.5 text-[#5ecd6e]" />
               <span>Colección</span>
             </button>
+            {maxSceneObjects !== null && userObjectCount !== undefined && (
+              <span
+                data-testid="outliner-object-limit-counter"
+                title="Objetos de modelado en esta escena / Límite de LOOPA Demo"
+                className="h-8 px-2 rounded bg-[#14161b] border border-[#262932] text-[11px] font-mono-tabular text-[#9ca3af] flex items-center justify-center shrink-0"
+              >
+                {userObjectCount}/{maxSceneObjects}
+              </span>
+            )}
           </div>
 
           {/* Hierarchical Tree: Scene -> Collection -> Object */}

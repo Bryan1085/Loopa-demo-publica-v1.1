@@ -21,6 +21,7 @@ import {
   Loader2,
   Lock,
   Menu,
+  MessageSquare,
   PanelRight,
   Save,
   Settings,
@@ -29,6 +30,12 @@ import {
   Upload,
   Camera,
 } from 'lucide-react';
+import {
+  AppCapabilities,
+  DEMO_LOCAL_STORAGE_WARNING,
+  getAppCapabilities,
+  ProFeatureKey,
+} from '../config/appCapabilities';
 import { APP_NAME } from '../config/brand';
 import { EditSelectionMode } from '../core/mesh/operations';
 import {
@@ -61,10 +68,13 @@ export interface SceneStatsInfo {
 }
 
 interface TopBarProps {
+  capabilities?: AppCapabilities;
   projectName: string;
   hasUnsavedChanges: boolean;
   saveStatus: SaveStatus;
   lastSaveError?: string | null;
+  demoSavedSuccessNonce?: number;
+  userObjectCount?: number;
   workMode: WorkMode;
   editSelectionMode: EditSelectionMode;
   canEditSelected: boolean;
@@ -83,6 +93,10 @@ interface TopBarProps {
   onSaveAsProjectModal: () => void;
   onImportNativeProject: () => void;
   onExportNativeProject: () => void;
+  onNewDemoWorkspace?: () => void;
+  onOpenDemoWelcome?: () => void;
+  onOpenProInfo?: (feature?: ProFeatureKey) => void;
+  onOpenFeedback?: () => void;
   onOpenSettingsModal: () => void;
   onImportObj: () => void;
   onImportStl: () => void;
@@ -104,10 +118,13 @@ interface TopBarProps {
 }
 
 export const TopBar: React.FC<TopBarProps> = ({
+  capabilities = getAppCapabilities(),
   projectName,
   hasUnsavedChanges,
   saveStatus,
   lastSaveError = null,
+  demoSavedSuccessNonce = 0,
+  userObjectCount,
   workMode,
   editSelectionMode,
   canEditSelected,
@@ -126,6 +143,10 @@ export const TopBar: React.FC<TopBarProps> = ({
   onSaveAsProjectModal,
   onImportNativeProject,
   onExportNativeProject,
+  onNewDemoWorkspace,
+  onOpenDemoWelcome,
+  onOpenProInfo,
+  onOpenFeedback,
   onOpenSettingsModal,
   onImportObj,
   onImportStl,
@@ -146,6 +167,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   onToggleOutliner,
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
+  const [justSavedNotice, setJustSavedNotice] = useState(false);
   const [openMenu, setOpenMenu] = useState<{
     key: TopMenuKey;
     left: number;
@@ -155,6 +177,19 @@ export const TopBar: React.FC<TopBarProps> = ({
   const fileBtnRef = useRef<HTMLButtonElement | null>(null);
   const viewportBtnRef = useRef<HTMLButtonElement | null>(null);
   const modeBtnRef = useRef<HTMLButtonElement | null>(null);
+
+  const isDemoMode = capabilities.localSingleWorkspaceOnly;
+  const effectiveObjectCount =
+    userObjectCount ?? sceneStats?.objectCount ?? 0;
+
+  useEffect(() => {
+    if (demoSavedSuccessNonce <= 0) return;
+    setJustSavedNotice(true);
+    const timer = window.setTimeout(() => {
+      setJustSavedNotice(false);
+    }, 3200);
+    return () => window.clearTimeout(timer);
+  }, [demoSavedSuccessNonce]);
 
   useEffect(() => {
     if (!openMenu) return;
@@ -211,54 +246,79 @@ export const TopBar: React.FC<TopBarProps> = ({
   return (
     <>
       <header className="h-12 shrink-0 bg-[#181a1f] border-b border-[#2b2e36] px-2 sm:px-3.5 flex items-center justify-between gap-2 z-30">
-        {/* Left: Brand Symbol + Back to Gallery + Active Project Name + Live Save Status */}
+        {/* Left: Brand Symbol + Gallery or Demo Badge + Active Project Name + Save Button */}
         <div className="flex items-center gap-2 min-w-0 shrink">
           <div
-            title={APP_NAME}
+            title={capabilities.editionLabel}
             className="hidden sm:flex items-center justify-center w-8 h-8 rounded-md bg-[#121418] border border-[#2b2f38] shrink-0"
           >
             <LoopaSymbol size={20} />
           </div>
 
-          <button
-            type="button"
-            data-testid="topbar-gallery-btn"
-            onClick={() => {
-              setOpenMenu(null);
-              onReturnToGallery();
-            }}
-            title={`Volver a la galería de ${APP_NAME}`}
-            className="min-h-[38px] px-2.5 sm:px-3 rounded-md bg-[#22252d] hover:bg-[#2c313b] border border-[#323640] text-xs font-semibold text-[#e4e6eb] flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors touch-manipulation"
-          >
-            <ArrowLeft className="w-4 h-4 text-[#5ecd6e] shrink-0" />
-            <span>Galería</span>
-          </button>
-
-          <div className="hidden md:flex items-center gap-1.5 min-w-0 max-w-[200px]">
-            <span
-              className="text-xs font-semibold text-[#d1d5db] truncate"
-              title={projectName}
+          {capabilities.galleryEnabled ? (
+            <button
+              type="button"
+              data-testid="topbar-gallery-btn"
+              onClick={() => {
+                setOpenMenu(null);
+                onReturnToGallery();
+              }}
+              title={`Volver a la galería de ${APP_NAME}`}
+              className="min-h-[38px] px-2.5 sm:px-3 rounded-md bg-[#22252d] hover:bg-[#2c313b] border border-[#323640] text-xs font-semibold text-[#e4e6eb] flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors touch-manipulation"
             >
-              {projectName}
-            </span>
-          </div>
+              <ArrowLeft className="w-4 h-4 text-[#5ecd6e] shrink-0" />
+              <span>Galería</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid="topbar-demo-badge"
+              onClick={() => {
+                setOpenMenu(null);
+                onOpenDemoWelcome?.();
+              }}
+              title="Información sobre LOOPA Demo y espacio de trabajo local"
+              className="min-h-[38px] px-2.5 rounded-md bg-[#16261a] hover:bg-[#1e3324] border border-[#5ecd6e]/45 text-xs font-bold text-[#7def8e] flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors touch-manipulation"
+            >
+              <LoopaSymbol size={16} className="sm:hidden shrink-0" />
+              <span>LOOPA Demo</span>
+            </button>
+          )}
+
+          {!isDemoMode && (
+            <div className="hidden md:flex items-center gap-1.5 min-w-0 max-w-[200px]">
+              <span
+                className="text-xs font-semibold text-[#d1d5db] truncate"
+                title={projectName}
+              >
+                {projectName}
+              </span>
+            </div>
+          )}
 
           <button
             type="button"
+            data-testid="topbar-save-btn"
             onClick={onSaveProject}
             title={
               saveStatus === 'error'
-                ? lastSaveError ?? 'Error al guardar'
-                : 'Guardar proyecto ahora (Ctrl+S)'
+                ? lastSaveError ?? 'Error al guardar en el navegador'
+                : isDemoMode
+                  ? 'Guardar proyecto manualmente en este navegador (Ctrl+S)'
+                  : 'Guardar proyecto ahora (Ctrl+S)'
             }
-            className={`hidden sm:flex min-h-[32px] px-2 rounded-md text-[11px] font-medium items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+            className={`${isDemoMode ? 'flex' : 'hidden sm:flex'} min-h-[36px] px-2.5 rounded-md border text-xs font-semibold items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors touch-manipulation ${
               saveStatus === 'error'
-                ? 'bg-[#331e22] text-[#fca5a5] border border-[#5c2c33]'
+                ? 'bg-[#331e22] text-[#fca5a5] border-[#7f1d1d]'
                 : saveStatus === 'saving'
-                  ? 'text-[#cbd5e1] bg-[#22252d]'
-                  : saveStatus === 'unsaved' || hasUnsavedChanges
-                    ? 'text-[#5ecd6e] hover:bg-[#252932]'
-                    : 'text-[#8e95a2] hover:bg-[#22252d] hover:text-[#e4e6eb]'
+                  ? 'text-[#cbd5e1] bg-[#22252d] border-[#323640]'
+                  : justSavedNotice && !hasUnsavedChanges
+                    ? 'bg-[#162b1c] text-[#7def8e] border-[#5ecd6e]/70'
+                    : saveStatus === 'unsaved' || hasUnsavedChanges
+                      ? isDemoMode
+                        ? 'bg-[#1f2922] hover:bg-[#27362b] text-[#7def8e] border-[#5ecd6e]/55'
+                        : 'text-[#5ecd6e] border-transparent hover:bg-[#252932]'
+                      : 'bg-[#1c1f26] text-[#9ca3af] hover:bg-[#22252d] hover:text-[#e4e6eb] border-[#2d313b]'
             }`}
           >
             {saveStatus === 'saving' ? (
@@ -273,13 +333,21 @@ export const TopBar: React.FC<TopBarProps> = ({
               </>
             ) : saveStatus === 'unsaved' || hasUnsavedChanges ? (
               <>
-                <Save className="w-3.5 h-3.5" />
-                <span>Sin guardar</span>
+                <Save className="w-3.5 h-3.5 shrink-0" />
+                <span>{isDemoMode ? 'Guardar' : 'Sin guardar'}</span>
+                {isDemoMode && (
+                  <span
+                    className="hidden sm:inline text-[10px] font-medium text-[#fbbf24]"
+                    data-testid="demo-unsaved-indicator"
+                  >
+                    · Sin guardar
+                  </span>
+                )}
               </>
             ) : (
               <>
                 <CheckCircle2 className="w-3.5 h-3.5 text-[#34d399]" />
-                <span>Guardado</span>
+                <span>{justSavedNotice ? 'Guardado en navegador' : 'Guardado'}</span>
               </>
             )}
           </button>
@@ -365,20 +433,39 @@ export const TopBar: React.FC<TopBarProps> = ({
           </button>
         </nav>
 
-        {/* Right: Collapse Top Bar Button */}
-        <button
-          type="button"
-          onClick={() => {
-            setOpenMenu(null);
-            setIsCollapsed(true);
-          }}
-          aria-label="Contraer barra superior"
-          title="Contraer barra superior para ampliar el viewport"
-          className="min-h-[38px] px-2.5 rounded-md bg-[#22252d] hover:bg-[#2c3039] border border-[#323640] text-[#9ca3af] hover:text-white flex items-center gap-1 text-xs font-medium shrink-0 transition-colors touch-manipulation"
-        >
-          <ChevronUp className="w-4 h-4" />
-          <span className="hidden sm:inline">Ocultar</span>
-        </button>
+        {/* Right: Feedback (if enabled) + Collapse Top Bar Button */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {capabilities.feedbackEnabled && onOpenFeedback && (
+            <button
+              type="button"
+              data-testid="topbar-feedback-btn"
+              onClick={() => {
+                setOpenMenu(null);
+                onOpenFeedback();
+              }}
+              aria-label="Enviar comentarios o reportar un error"
+              title="Comentarios / Reportar error"
+              className="min-h-[38px] px-2.5 rounded-md bg-[#22252d] hover:bg-[#2c313b] border border-[#323640] text-[#cbd5e1] hover:text-white flex items-center gap-1.5 text-xs font-medium shrink-0 transition-colors touch-manipulation"
+            >
+              <MessageSquare className="w-4 h-4 text-[#5ecd6e] shrink-0" />
+              <span className="hidden lg:inline">Comentarios</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => {
+              setOpenMenu(null);
+              setIsCollapsed(true);
+            }}
+            aria-label="Contraer barra superior"
+            title="Contraer barra superior para ampliar el viewport"
+            className="min-h-[38px] px-2.5 rounded-md bg-[#22252d] hover:bg-[#2c3039] border border-[#323640] text-[#9ca3af] hover:text-white flex items-center gap-1 text-xs font-medium shrink-0 transition-colors touch-manipulation"
+          >
+            <ChevronUp className="w-4 h-4" />
+            <span className="hidden sm:inline">Ocultar</span>
+          </button>
+        </div>
       </header>
 
       {/* Dropdown Popover Backdrop + Single Open Menu */}
@@ -400,232 +487,380 @@ export const TopBar: React.FC<TopBarProps> = ({
               onPointerDown={(e) => e.stopPropagation()}
               className="fixed w-[288px] max-h-[78vh] overflow-y-auto cad-scroll rounded-xl bg-[#181a1f] border border-[#343a47] shadow-2xl p-1.5 space-y-1"
             >
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpenMenu(null);
-                  onReturnToGallery();
-                }}
-                className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-semibold text-[#5ecd6e] flex items-center gap-2.5 text-left transition-colors"
-              >
-                <ArrowLeft className="w-4 h-4 shrink-0" />
-                <span>Volver a la galería</span>
-              </button>
+              {capabilities.galleryEnabled ? (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onReturnToGallery();
+                    }}
+                    className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-semibold text-[#5ecd6e] flex items-center gap-2.5 text-left transition-colors"
+                  >
+                    <ArrowLeft className="w-4 h-4 shrink-0" />
+                    <span>Volver a la galería</span>
+                  </button>
+
+                  <div className="my-1 border-t border-[#272b34]" />
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onCreateProjectModal();
+                    }}
+                    className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
+                  >
+                    <FilePlus2 className="w-4 h-4 text-[#5ecd6e] shrink-0" />
+                    <span>Crear proyecto</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onOpenProjectModal();
+                    }}
+                    className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
+                  >
+                    <FolderOpen className="w-4 h-4 text-[#5ecd6e] shrink-0" />
+                    <span>Abrir proyecto</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onSaveProject();
+                    }}
+                    className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-medium text-[#e4e6eb] flex items-center justify-between gap-2 text-left transition-colors"
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <Save className="w-4 h-4 text-[#5ecd6e] shrink-0" />
+                      <span>Guardar</span>
+                    </span>
+                    {saveStatus === 'error' ? (
+                      <span className="text-[10px] font-medium text-[#fca5a5]">
+                        Error
+                      </span>
+                    ) : hasUnsavedChanges ? (
+                      <span className="text-[10px] font-medium text-[#5ecd6e]">
+                        Sin guardar
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-medium text-[#34d399]">
+                        Guardado
+                      </span>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onSaveAsProjectModal();
+                    }}
+                    className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
+                  >
+                    <CopyPlus className="w-4 h-4 text-[#cbd5e1] shrink-0" />
+                    <span>Guardar como</span>
+                  </button>
+
+                  <div className="my-1 border-t border-[#272b34]" />
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onImportNativeProject();
+                    }}
+                    className="w-full min-h-[40px] px-2.5 rounded-lg hover:bg-[#252932] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
+                  >
+                    <Upload className="w-4 h-4 text-[#5ecd6e] shrink-0" />
+                    <span>Importar proyecto</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onExportNativeProject();
+                    }}
+                    className="w-full min-h-[40px] px-2.5 rounded-lg hover:bg-[#252932] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
+                  >
+                    <Download className="w-4 h-4 text-[#34d399] shrink-0" />
+                    <span>Exportar proyecto</span>
+                  </button>
+
+                  <div className="my-1 border-t border-[#272b34]" />
+
+                  <div className="px-2.5 pt-1 pb-0.5 text-[11px] font-semibold text-[#8e95a2] flex items-center gap-1.5">
+                    <Upload className="w-3.5 h-3.5 text-[#5ecd6e]" />
+                    <span>Importar</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenu(null);
+                        onImportObj();
+                      }}
+                      className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
+                    >
+                      <FileBox className="w-3.5 h-3.5 text-[#5ecd6e] shrink-0" />
+                      <span>OBJ</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenu(null);
+                        onImportStl();
+                      }}
+                      className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
+                    >
+                      <FileBox className="w-3.5 h-3.5 text-[#34d399] shrink-0" />
+                      <span>STL</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenu(null);
+                        onImportJpg();
+                      }}
+                      className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5 text-[#38bdf8] shrink-0" />
+                      <span>JPG</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenu(null);
+                        onImportPng();
+                      }}
+                      className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5 text-[#60a5fa] shrink-0" />
+                      <span>PNG</span>
+                    </button>
+                  </div>
+
+                  <div className="my-1 border-t border-[#272b34]" />
+
+                  <div className="px-2.5 pt-1 pb-0.5 text-[11px] font-semibold text-[#8e95a2] flex items-center gap-1.5">
+                    <Download className="w-3.5 h-3.5 text-[#5ecd6e]" />
+                    <span>Exportar</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!hasSelectedObject}
+                      onClick={() => {
+                        setOpenMenu(null);
+                        onExportSelected();
+                      }}
+                      className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] disabled:opacity-40 disabled:pointer-events-none text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
+                    >
+                      <Box className="w-3.5 h-3.5 text-[#5ecd6e] shrink-0" />
+                      <span className="truncate">Seleccionado</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenu(null);
+                        onExportScene();
+                      }}
+                      className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
+                    >
+                      <Layers className="w-3.5 h-3.5 text-[#a78bfa] shrink-0" />
+                      <span className="truncate">Escena</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenu(null);
+                        onExportObj();
+                      }}
+                      className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5 text-[#cbd5e1] shrink-0" />
+                      <span>OBJ</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenu(null);
+                        onExportStl();
+                      }}
+                      className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
+                    >
+                      <Download className="w-3.5 h-3.5 text-[#34d399] shrink-0" />
+                      <span>STL</span>
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* DEMO FILE MENU: Single Local Workspace + Reference Images + Pro Features Info */}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onNewDemoWorkspace?.();
+                    }}
+                    className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
+                  >
+                    <FilePlus2 className="w-4 h-4 text-[#5ecd6e] shrink-0" />
+                    <span>Nuevo espacio de trabajo</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setOpenMenu(null);
+                      onSaveProject();
+                    }}
+                    className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-medium text-[#e4e6eb] flex items-center justify-between gap-2 text-left transition-colors"
+                  >
+                    <span className="flex items-center gap-2.5">
+                      <Save className="w-4 h-4 text-[#5ecd6e] shrink-0" />
+                      <span>Guardar en navegador</span>
+                    </span>
+                    {saveStatus === 'error' ? (
+                      <span className="text-[10px] font-medium text-[#fca5a5]">
+                        Error
+                      </span>
+                    ) : hasUnsavedChanges ? (
+                      <span className="text-[10px] font-medium text-[#fbbf24]">
+                        Sin guardar
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-medium text-[#34d399]">
+                        Guardado
+                      </span>
+                    )}
+                  </button>
+
+                  <div className="mx-1 px-2.5 py-2 rounded-lg bg-[#13161b] border border-[#262b35] text-[10px] text-[#9ca3af] leading-snug">
+                    {DEMO_LOCAL_STORAGE_WARNING}
+                  </div>
+
+                  <div className="my-1 border-t border-[#272b34]" />
+
+                  <div className="px-2.5 pt-1 pb-0.5 text-[11px] font-semibold text-[#8e95a2] flex items-center gap-1.5">
+                    <ImageIcon className="w-3.5 h-3.5 text-[#38bdf8]" />
+                    <span>Imágenes de referencia</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenu(null);
+                        onImportJpg();
+                      }}
+                      className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5 text-[#38bdf8] shrink-0" />
+                      <span>JPG</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenu(null);
+                        onImportPng();
+                      }}
+                      className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5 text-[#60a5fa] shrink-0" />
+                      <span>PNG</span>
+                    </button>
+                  </div>
+
+                  <div className="my-1 border-t border-[#272b34]" />
+
+                  <div className="px-2.5 pt-1 pb-0.5 text-[11px] font-semibold text-[#8e95a2] flex items-center justify-between gap-1.5">
+                    <span className="flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-[#60a5fa]" />
+                      <span>Reservado para LOOPA Pro</span>
+                    </span>
+                  </div>
+                  <div className="space-y-1">
+                    {(
+                      [
+                        {
+                          feature: 'gallery',
+                          label: 'Galería y múltiples proyectos',
+                        },
+                        {
+                          feature: 'import_obj',
+                          label: 'Importar modelos OBJ / STL',
+                        },
+                        {
+                          feature: 'export_model',
+                          label: 'Exportar modelos OBJ / STL',
+                        },
+                        {
+                          feature: 'native_project_file',
+                          label: 'Importar / Exportar proyecto',
+                        },
+                      ] as const
+                    ).map((item) => (
+                      <button
+                        key={item.feature}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setOpenMenu(null);
+                          onOpenProInfo?.(item.feature);
+                        }}
+                        className="w-full min-h-[36px] px-2.5 rounded-lg bg-[#14171d] hover:bg-[#1e232d] text-[11px] font-medium text-[#9ca3af] hover:text-[#dbeafe] flex items-center justify-between gap-2 text-left transition-colors"
+                      >
+                        <span className="truncate">{item.label}</span>
+                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#60a5fa] shrink-0">
+                          <Lock className="w-3 h-3" />
+                          <span>Pro</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
 
               <div className="my-1 border-t border-[#272b34]" />
 
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpenMenu(null);
-                  onCreateProjectModal();
-                }}
-                className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
-              >
-                <FilePlus2 className="w-4 h-4 text-[#5ecd6e] shrink-0" />
-                <span>Crear proyecto</span>
-              </button>
-
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpenMenu(null);
-                  onOpenProjectModal();
-                }}
-                className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
-              >
-                <FolderOpen className="w-4 h-4 text-[#5ecd6e] shrink-0" />
-                <span>Abrir proyecto</span>
-              </button>
-
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpenMenu(null);
-                  onSaveProject();
-                }}
-                className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-medium text-[#e4e6eb] flex items-center justify-between gap-2 text-left transition-colors"
-              >
-                <span className="flex items-center gap-2.5">
-                  <Save className="w-4 h-4 text-[#5ecd6e] shrink-0" />
-                  <span>Guardar</span>
-                </span>
-                {saveStatus === 'error' ? (
-                  <span className="text-[10px] font-medium text-[#fca5a5]">
-                    Error
-                  </span>
-                ) : hasUnsavedChanges ? (
-                  <span className="text-[10px] font-medium text-[#5ecd6e]">
-                    Sin guardar
-                  </span>
-                ) : (
-                  <span className="text-[10px] font-medium text-[#34d399]">
-                    Guardado
-                  </span>
-                )}
-              </button>
-
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpenMenu(null);
-                  onSaveAsProjectModal();
-                }}
-                className="w-full min-h-[42px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
-              >
-                <CopyPlus className="w-4 h-4 text-[#cbd5e1] shrink-0" />
-                <span>Guardar como</span>
-              </button>
-
-              <div className="my-1 border-t border-[#272b34]" />
-
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpenMenu(null);
-                  onImportNativeProject();
-                }}
-                className="w-full min-h-[40px] px-2.5 rounded-lg hover:bg-[#252932] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
-              >
-                <Upload className="w-4 h-4 text-[#5ecd6e] shrink-0" />
-                <span>Importar proyecto</span>
-              </button>
-
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpenMenu(null);
-                  onExportNativeProject();
-                }}
-                className="w-full min-h-[40px] px-2.5 rounded-lg hover:bg-[#252932] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
-              >
-                <Download className="w-4 h-4 text-[#34d399] shrink-0" />
-                <span>Exportar proyecto</span>
-              </button>
-
-              <div className="my-1 border-t border-[#272b34]" />
-
-              <div className="px-2.5 pt-1 pb-0.5 text-[11px] font-semibold text-[#8e95a2] flex items-center gap-1.5">
-                <Upload className="w-3.5 h-3.5 text-[#5ecd6e]" />
-                <span>Importar</span>
-              </div>
-              <div className="grid grid-cols-2 gap-1">
+              {capabilities.feedbackEnabled && onOpenFeedback && (
                 <button
                   type="button"
                   role="menuitem"
                   onClick={() => {
                     setOpenMenu(null);
-                    onImportObj();
+                    onOpenFeedback();
                   }}
-                  className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
+                  className="w-full min-h-[40px] px-2.5 rounded-lg hover:bg-[#252932] active:bg-[#2e333f] text-xs font-medium text-[#e4e6eb] flex items-center gap-2.5 text-left transition-colors"
                 >
-                  <FileBox className="w-3.5 h-3.5 text-[#5ecd6e] shrink-0" />
-                  <span>OBJ</span>
+                  <MessageSquare className="w-4 h-4 text-[#5ecd6e] shrink-0" />
+                  <span>Comentarios / Reportar error</span>
                 </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    onImportStl();
-                  }}
-                  className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
-                >
-                  <FileBox className="w-3.5 h-3.5 text-[#34d399] shrink-0" />
-                  <span>STL</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    onImportJpg();
-                  }}
-                  className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
-                >
-                  <ImageIcon className="w-3.5 h-3.5 text-[#38bdf8] shrink-0" />
-                  <span>JPG</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    onImportPng();
-                  }}
-                  className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
-                >
-                  <ImageIcon className="w-3.5 h-3.5 text-[#60a5fa] shrink-0" />
-                  <span>PNG</span>
-                </button>
-              </div>
-
-              <div className="my-1 border-t border-[#272b34]" />
-
-              <div className="px-2.5 pt-1 pb-0.5 text-[11px] font-semibold text-[#8e95a2] flex items-center gap-1.5">
-                <Download className="w-3.5 h-3.5 text-[#5ecd6e]" />
-                <span>Exportar</span>
-              </div>
-              <div className="grid grid-cols-2 gap-1">
-                <button
-                  type="button"
-                  role="menuitem"
-                  disabled={!hasSelectedObject}
-                  onClick={() => {
-                    setOpenMenu(null);
-                    onExportSelected();
-                  }}
-                  className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] disabled:opacity-40 disabled:pointer-events-none text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
-                >
-                  <Box className="w-3.5 h-3.5 text-[#5ecd6e] shrink-0" />
-                  <span className="truncate">Seleccionado</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    onExportScene();
-                  }}
-                  className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
-                >
-                  <Layers className="w-3.5 h-3.5 text-[#a78bfa] shrink-0" />
-                  <span className="truncate">Escena</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    onExportObj();
-                  }}
-                  className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
-                >
-                  <Download className="w-3.5 h-3.5 text-[#cbd5e1] shrink-0" />
-                  <span>OBJ</span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setOpenMenu(null);
-                    onExportStl();
-                  }}
-                  className="min-h-[40px] px-2.5 rounded-lg bg-[#1e2128] hover:bg-[#272b35] text-xs font-medium text-[#e4e6eb] flex items-center gap-2 transition-colors"
-                >
-                  <Download className="w-3.5 h-3.5 text-[#34d399] shrink-0" />
-                  <span>STL</span>
-                </button>
-              </div>
-
-              <div className="my-1 border-t border-[#272b34]" />
+              )}
 
               <button
                 type="button"
@@ -649,7 +884,9 @@ export const TopBar: React.FC<TopBarProps> = ({
                         {sceneStats.activeObjectName ?? 'Sin selección'}
                       </span>
                       <span className="font-mono-tabular text-[#8e95a2] shrink-0">
-                        {sceneStats.objectCount} obj.
+                        {capabilities.maxSceneObjects !== null
+                          ? `${effectiveObjectCount} / ${capabilities.maxSceneObjects} obj.`
+                          : `${sceneStats.objectCount} obj.`}
                       </span>
                     </div>
                     <div className="flex items-center justify-between font-mono-tabular text-[#9ca3af]">
